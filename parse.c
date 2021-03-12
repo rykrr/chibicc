@@ -104,6 +104,8 @@ static char *cont_label;
 // a switch statement. Otherwise, NULL.
 static Node *current_switch;
 
+static Node *current_match;
+
 static Obj *builtin_alloca;
 
 static bool is_typename(Token *tok);
@@ -147,6 +149,7 @@ static Node *cast(Token **rest, Token *tok);
 static Member *get_struct_member(Type *ty, Token *tok);
 static Type *struct_decl(Token **rest, Token *tok);
 static Type *union_decl(Token **rest, Token *tok);
+static Type *tagged_union_decl(Token **rest, Token *tok);
 static Node *postfix(Token **rest, Token *tok);
 static Node *funcall(Token **rest, Token *tok, Node *node);
 static Node *unary(Token **rest, Token *tok);
@@ -274,7 +277,7 @@ static Initializer *new_initializer(Type *ty, bool is_flexible) {
     return init;
   }
 
-  if (ty->kind == TY_STRUCT || ty->kind == TY_UNION) {
+  if (ty->kind == TY_STRUCT || ty->kind == TY_UNION || ty->kind == TY_TAGGED) {
     // Count the number of struct members.
     int len = 0;
     for (Member *mem = ty->members; mem; mem = mem->next)
@@ -460,7 +463,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
     // Handle user-defined types.
     Type *ty2 = find_typedef(tok);
     if (equal(tok, "struct") || equal(tok, "union") || equal(tok, "enum") ||
-        equal(tok, "typeof") || ty2) {
+        equal(tok, "typeof") || equal(tok, "tagged_union") || ty2) {
       if (counter)
         break;
 
@@ -468,6 +471,8 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         ty = struct_decl(&tok, tok->next);
       } else if (equal(tok, "union")) {
         ty = union_decl(&tok, tok->next);
+      } else if (equal(tok, "tagged_union")) {
+        ty = tagged_union_decl(&tok, tok->next);
       } else if (equal(tok, "enum")) {
         ty = enum_specifier(&tok, tok->next);
       } else if (equal(tok, "typeof")) {
@@ -1224,6 +1229,58 @@ static void union_initializer(Token **rest, Token *tok, Initializer *init) {
   }
 }
 
+static void tagged_union_mem_initializer(Token **rest, Token *tok, Initializer *init) {
+
+  Member *mem = init->ty->members;
+  bool first = true;
+
+  while (!equal(tok, ")")) {
+    if (!first)
+      tok = skip(tok, ",");
+    first = false;
+
+    initializer2(&tok, tok, init->children[mem->idx]);
+
+    if (!mem)
+      error_tok(tok, "excess element");
+    mem = mem->next;
+  }
+
+  if (mem)
+    error_tok(tok, "missing arguments");
+
+  *rest = tok->next;
+}
+
+static void tagged_union_initializer(Token **rest, Token *tok, Initializer *init) {
+  if (tok->kind != TK_IDENT)
+    error_tok(tok, "tagged union cannot be uninitialized");
+
+  // Skip the hidden tag field
+  Member *mem = init->ty->members->next;
+
+  for (; mem; mem = mem->next)
+    if (mem->name->len == tok->len && !strncmp(mem->name->loc, tok->loc, tok->len))
+      break;
+
+  if (!mem)
+    error_tok(tok, "identifier does not match any known designator");
+
+  tok = tok->next;
+  init->mem = mem;
+
+  // Set the tag's value to the index of the selected member
+  init->children[0]->expr = new_long(mem->idx, tok);
+
+  // Initialize selected member
+  if (equal(tok, "(")) {
+    tagged_union_mem_initializer(&tok, tok->next, init->children[mem->idx]);
+    tok = skip(tok, ")");
+  }
+
+  *rest = tok;
+}
+
 // initializer = string-initializer | array-initializer
 //             | struct-initializer | union-initializer
 //             | assign
@@ -1263,6 +1320,11 @@ static void initializer2(Token **rest, Token *tok, Initializer *init) {
 
   if (init->ty->kind == TY_UNION) {
     union_initializer(rest, tok, init);
+    return;
+  }
+
+  if (init->ty->kind == TY_TAGGED) {
+    tagged_union_initializer(rest, tok, init);
     return;
   }
 
@@ -1354,6 +1416,28 @@ static Node *create_lvar_init(Initializer *init, Type *ty, InitDesg *desg, Token
     Member *mem = init->mem ? init->mem : ty->members;
     InitDesg desg2 = {desg, 0, mem};
     return create_lvar_init(init->children[mem->idx], mem->ty, &desg2, tok);
+  }
+
+  if (ty->kind == TY_TAGGED) {
+    Node *node = new_node(ND_NULL_EXPR, tok);
+    {
+      Member *mem = ty->members;
+      InitDesg desg2 = {desg, 0, mem};
+      Node *rhs = create_lvar_init(init->children[mem->idx], mem->ty, &desg2, tok);
+      node = new_binary(ND_COMMA, node, rhs, tok);
+    }
+    {
+      Member *mem = init->mem;
+      if (!mem->idx) {
+        mem = mem->next;
+        if (!mem)
+          error_tok(tok, "no fallback designator");
+      }
+      InitDesg desg2 = {desg, 0, mem};
+      Node *rhs = create_lvar_init(init->children[mem->idx], mem->ty, &desg2, tok);
+      node = new_binary(ND_COMMA, node, rhs, tok);
+    }
+    return node;
   }
 
   if (!init->expr)
@@ -1503,7 +1587,7 @@ static bool is_typename(Token *tok) {
       "typedef", "enum", "static", "extern", "_Alignas", "signed", "unsigned",
       "const", "volatile", "auto", "register", "restrict", "__restrict",
       "__restrict__", "_Noreturn", "float", "double", "typeof", "inline",
-      "_Thread_local", "__thread", "_Atomic",
+      "_Thread_local", "__thread", "_Atomic", "tagged_union",
     };
 
     for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++)
@@ -1527,6 +1611,85 @@ static Node *asm_stmt(Token **rest, Token *tok) {
   node->asm_str = tok->str;
   *rest = skip(tok->next, ")");
   return node;
+}
+
+/*
+static void create_match_lvars(Member *mem) {
+  if (mem) {
+    create_match_lvars(mem->next);
+    if (!mem->name)
+      error_tok(mem->name_pos, "parameter name omitted");
+    new_lvar(get_ident(param->name), param);
+  }
+}
+*/
+
+static Node *match_stmt_cases(Token **rest, Token *tok, Type *ty) {
+
+  Node *block = new_node(ND_BLOCK, tok);
+  Node head = {};
+  Node *cur = &head;
+
+  bool first = true;
+
+  while (!consume_end(&tok, tok)) {
+    if (!first)
+      tok = skip(tok, ",");
+    first = false;
+
+    enter_scope();
+    Node *node = new_node(ND_CASE, tok);
+
+    if (equal(tok, "_")) {
+      tok = skip(skip(skip(tok->next, "="), ">"), "{");
+
+      node->label = new_unique_name();
+      node->lhs = compound_stmt(&tok, tok);
+      current_match->default_case = node;
+
+      if (!consume_end(&tok, tok))
+        error_tok(tok, "expected }");
+
+      cur = cur->next = node;
+      leave_scope();
+      break;
+    }
+
+    Member *mem = ty->members->next;
+    for (; mem; mem = mem->next) {
+      if (mem->name->len == tok->len &&
+          !strncmp(mem->name->loc, tok->loc, tok->len))
+        break;
+    }
+
+    if (!mem)
+      error_tok(tok, "identifier does not match any known designator");
+
+    tok = skip(skip(skip(tok->next, "="), ">"), "{");
+
+    // Compound statement with implicit break
+    Node *brk = new_node(ND_GOTO, tok);
+    brk->unique_label = brk_label;
+
+    Node *lhs = new_node(ND_BLOCK, tok);
+    lhs->body = compound_stmt(&tok, tok);
+    lhs->body->next = brk;
+
+
+    node->label = new_unique_name();
+    node->begin = node->end = mem->idx;
+    node->lhs = lhs;
+    node->case_next = current_match->case_next;
+    current_match->case_next = node;
+
+    cur = cur->next = node;
+
+    leave_scope();
+  }
+
+  block->body = head.next;
+  *rest = tok;
+  return block;
 }
 
 // stmt = "return" expr? ";"
@@ -1555,7 +1718,7 @@ static Node *stmt(Token **rest, Token *tok) {
 
     add_type(exp);
     Type *ty = current_fn->ty->return_ty;
-    if (ty->kind != TY_STRUCT && ty->kind != TY_UNION)
+    if (ty->kind != TY_STRUCT && ty->kind != TY_UNION && ty->kind != TY_TAGGED)
       exp = new_cast(exp, current_fn->ty->return_ty);
 
     node->lhs = exp;
@@ -1571,6 +1734,38 @@ static Node *stmt(Token **rest, Token *tok) {
     if (equal(tok, "else"))
       node->els = stmt(&tok, tok->next);
     *rest = tok;
+    return node;
+  }
+
+  if (equal(tok, "match")) {
+    Node *node = new_node(ND_SWITCH, tok);
+    tok = skip(tok->next, "(");
+
+    Node *cond = expr(&tok, tok);
+    Node *leaf = cond;
+
+    while (leaf->kind == ND_DEREF)
+        leaf = leaf->lhs;
+
+    Type *ty = leaf->var->ty;
+    if (ty->kind != TY_TAGGED)
+      error_tok(tok, "match statement expr must be tagged_union");
+
+    tok = skip(skip(tok, ")"), "{");
+
+    Node *ma = current_match;
+    current_match = node;
+
+    char *brk = brk_label;
+    brk_label = node->brk_label = new_unique_name();
+
+    cond = new_unary(ND_MEMBER, cond, tok);
+    cond->member = ty->members;
+
+    node->cond = cond;
+    node->then = match_stmt_cases(rest, tok, ty);
+    current_match = ma;
+    brk_label = brk;
     return node;
   }
 
@@ -1684,6 +1879,24 @@ static Node *stmt(Token **rest, Token *tok) {
     return node;
   }
 
+  if (equal(tok, "loop")) {
+    Node *node = new_node(ND_FOR, tok);
+    node->cond = NULL;
+
+    tok = skip(tok, "loop");
+
+    char *brk = brk_label;
+    char *cont = cont_label;
+    brk_label = node->brk_label = new_unique_name();
+    cont_label = node->cont_label = new_unique_name();
+
+    node->then = stmt(rest, tok);
+
+    brk_label = brk;
+    cont_label = cont;
+    return node;
+  }
+
   if (equal(tok, "do")) {
     Node *node = new_node(ND_DO, tok);
 
@@ -1725,6 +1938,7 @@ static Node *stmt(Token **rest, Token *tok) {
     return node;
   }
 
+  /*
   if (equal(tok, "break")) {
     if (!brk_label)
       error_tok(tok, "stray break");
@@ -1733,13 +1947,55 @@ static Node *stmt(Token **rest, Token *tok) {
     *rest = skip(tok->next, ";");
     return node;
   }
+  */
 
+  if (equal(tok, "break")) {
+    if (!brk_label)
+      error_tok(tok, "stray break");
+
+    Node *node = new_node(ND_GOTO, tok);
+    node->unique_label = brk_label;
+    tok = skip(tok, "break");
+
+    if (equal(tok, "if")) {
+        Node *ifnode = new_node(ND_IF, tok);
+        tok = skip(tok, "if");
+        ifnode->cond = expr(&tok, tok);
+        ifnode->then = node;
+        node = ifnode;
+    }
+
+    *rest = skip(tok, ";");
+    return node;
+  }
+
+  /*
   if (equal(tok, "continue")) {
     if (!cont_label)
       error_tok(tok, "stray continue");
     Node *node = new_node(ND_GOTO, tok);
     node->unique_label = cont_label;
     *rest = skip(tok->next, ";");
+    return node;
+  }
+  */
+
+  if (equal(tok, "continue")) {
+    if (!cont_label)
+      error_tok(tok, "stray continue");
+
+    Node *node = new_node(ND_GOTO, tok);
+    node->unique_label = cont_label;
+    tok = skip(tok, "continue");
+
+    if (equal(tok, "if")) {
+        Node *ifnode = new_node(ND_IF, tok);
+        tok = skip(tok, "if");
+        ifnode->cond = expr(&tok, tok);
+        ifnode->then = node;
+        node = ifnode;
+    }
+    *rest = skip(tok, ";");
     return node;
   }
 
@@ -2470,7 +2726,7 @@ static Node *cast(Token **rest, Token *tok) {
     tok = skip(tok, ")");
 
     // compound literal
-    if (equal(tok, "{"))
+    if (equal(tok, "{") || ty->kind == TY_TAGGED)
       return unary(rest, start);
 
     // type cast
@@ -2734,6 +2990,132 @@ static Type *union_decl(Token **rest, Token *tok) {
   return ty;
 }
 
+// Tagged union sub-types are just structs with 0 or more members
+static Type *tagged_union_members(Token **rest, Token *tok) {
+  Type *ty = struct_type();
+  
+  Member head = {};
+  Member *cur = &head;
+
+  int idx = 0;
+
+  // Assign offsets within the struct to members.
+  int bytes = 0;
+
+  while (!equal(tok, ")")) {
+    if (idx)
+      tok = skip(tok, ",");
+
+    VarAttr attr = {};
+    Type *basety = declspec(&tok, tok, &attr);
+
+    Member *mem = calloc(1, sizeof(Member));
+    mem->ty = pointers(&tok, tok, basety);
+    mem->name = mem->ty->name;
+    mem->idx = idx++;
+    mem->align = attr.align ? attr.align : mem->ty->align;
+    mem->offset = bytes;
+    bytes += mem->ty->size;
+    cur = cur->next = mem;
+  }
+  ty->members = head.next;
+  ty->size = align_to(ty->size, ty->align);
+
+  *rest = tok->next;
+  return ty;
+}
+
+static Type *tagged_union_decl(Token **rest, Token *tok) {
+  Type *ty = struct_type();
+  ty->kind = TY_TAGGED;
+
+  tok = attribute_list(tok, ty);
+
+  // Read a struct tag.
+  Token *tag = NULL;
+  if (tok->kind == TK_IDENT) {
+    tag = tok;
+    tok = tok->next;
+  }
+  else {
+    error_tok(tok, "tagged_unions cannot be anonymous");
+  }
+
+  if (tag && !equal(tok, "{")) {
+    *rest = tok;
+
+    Type *ty2 = find_tag(tag);
+    if (ty2)
+      return ty2;
+
+    // Forward declaration?
+    ty->size = -1;
+    push_tag_scope(tag, ty);
+    return ty;
+  }
+
+  tok = skip(tok, "{");
+
+  Member *head = calloc(1, sizeof(Member));
+  Member *cur = head;
+
+  int idx = 0;
+  int size = 0;
+  bool first = true;
+
+  // The first member is a hidden tag field used to specify the active member
+  head->offset = ty->size;
+  head->idx = idx++;
+  head->ty = ty_long;
+  head->align = head->ty->align;
+
+  ty->align = head->align;
+  ty->size = align_to(head->ty->size, head->align);
+
+  // Read the definitions of possible types
+  while (!consume_end(&tok, tok)) {
+    if (!first)
+      tok = skip(tok, ",");
+    first = false;
+
+    Member *mem = calloc(1, sizeof(Member));
+    get_ident(tok);
+    mem->name = tok;
+    mem->offset = ty->size;
+    mem->idx = idx++;
+    mem->ty = ty_void;
+    tok = tok->next;
+
+    if (equal(tok, "(")) {
+      mem->ty = tagged_union_members(&tok, tok->next);
+    }
+    else {
+      mem->ty = ty_void;
+    }
+
+    if (ty->align < mem->align)
+      ty->align = mem->align;
+    if (size < mem->ty->size)
+      size = mem->ty->size;
+
+    cur = cur->next = mem;
+  }
+
+  ty->members = head;
+  ty->size = align_to(size, ty->align);
+  *rest = tok;
+
+  // If this is a redefinition, overwrite a previous type.
+  // Otherwise, register the struct type.
+  Type *ty2 = hashmap_get2(&scope->tags, tag->loc, tag->len);
+  if (ty2)
+    *ty2 = *ty;
+  else
+      push_tag_scope(tag, ty);
+
+  return ty;
+}
+
 // Find a struct member by name.
 static Member *get_struct_member(Type *ty, Token *tok) {
   for (Member *mem = ty->members; mem; mem = mem->next) {
@@ -2896,7 +3278,7 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
       error_tok(tok, "too many arguments");
 
     if (param_ty) {
-      if (param_ty->kind != TY_STRUCT && param_ty->kind != TY_UNION)
+      if (param_ty->kind != TY_STRUCT && param_ty->kind != TY_UNION && param_ty->kind != TY_TAGGED)
         arg = new_cast(arg, param_ty);
       param_ty = param_ty->next;
     } else if (arg->ty->kind == TY_FLOAT) {
@@ -2920,7 +3302,7 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
 
   // If a function returns a struct, it is caller's responsibility
   // to allocate a space for the return value.
-  if (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION)
+  if (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION || node->ty->kind == TY_TAGGED)
     node->ret_buffer = new_lvar("", node->ty);
   return node;
 }
@@ -3233,7 +3615,8 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
   // A buffer for a struct/union return value is passed
   // as the hidden first parameter.
   Type *rty = ty->return_ty;
-  if ((rty->kind == TY_STRUCT || rty->kind == TY_UNION) && rty->size > 16)
+  if ((rty->kind == TY_STRUCT || rty->kind == TY_UNION || rty->kind == TY_TAGGED)
+        && rty->size > 16)
     new_lvar("", pointer_to(rty));
 
   fn->params = locals;

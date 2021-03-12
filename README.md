@@ -1,5 +1,55 @@
 # chibicc: A Small C Compiler
 
+## About the rykrr/chibicc fork
+This fork of chibicc (has been|will be) modified to add some experimental
+features, syntax, and semantics. Mainly for fun, partly for class.
+
+### Added 'loop'
+Added a Rust-like 'loop' keyword and added conditional 'break if' and
+'continue if' statements:
+```
+int x = 0;
+loop {
+  printf("%d\n", x++);
+  break if x == 5;
+}
+```
+The above code is equivalent to the following code.
+```
+#define loop for(;;)
+int x = 0;
+loop {
+  printf("%d\n", x++);
+  if (x == 5) break;
+}
+```
+There was no reason for this other than to get familiar with the compiler.
+
+### Added tagged unions (wip)
+This modification introduces the 'tagged_union' type and 'match' statement.
+
+```
+typedef tagged_union MaybeInt {
+  Nothing,
+  Some(int)
+} MaybeInt;
+
+MaybeInt t = Nothing;
+
+// Not the most elegant syntax, but it works
+t = (MaybeInt) Some(2);
+
+match (t) {
+    Nothing => { printf("Nothing!"); },
+    Some(x) => { printf("Some %d", x); }
+}
+
+puts("");
+```
+
+Everything except for the `match Some(x)` are currently implemented.
+
+## Description
 (The old master has moved to
 [historical/old](https://github.com/rui314/chibicc/tree/historical/old)
 branch. This is a new one uploaded in September 2020.)
