@@ -1229,6 +1229,13 @@ static void union_initializer(Token **rest, Token *tok, Initializer *init) {
   }
 }
 
+static Member *tagged_union_mem_lookup(Token *tok, Type *ty) {
+  for (Member *mem = ty->members->next; mem; mem = mem->next)
+    if (mem->name->len == tok->len && !strncmp(mem->name->loc, tok->loc, tok->len))
+      return mem;
+  return NULL;
+}
+
 static void tagged_union_mem_initializer(Token **rest, Token *tok, Initializer *init) {
 
   Member *mem = init->ty->members;
@@ -1257,12 +1264,7 @@ static void tagged_union_initializer(Token **rest, Token *tok, Initializer *init
   if (tok->kind != TK_IDENT)
     error_tok(tok, "tagged union cannot be uninitialized");
 
-  // Skip the hidden tag field
-  Member *mem = init->ty->members->next;
-
-  for (; mem; mem = mem->next)
-    if (mem->name->len == tok->len && !strncmp(mem->name->loc, tok->loc, tok->len))
-      break;
+  Member *mem = tagged_union_mem_lookup(tok, init->ty);
 
   if (!mem)
     error_tok(tok, "identifier does not match any known designator");
@@ -1327,8 +1329,22 @@ static void initializer2(Token **rest, Token *tok, Initializer *init) {
   }
 
   if (init->ty->kind == TY_TAGGED) {
-    tagged_union_initializer(rest, tok, init);
-    return;
+    // A struct can be initialized with another struct. E.g.
+    // `struct T x = y;` where y is a variable of type `struct T`.
+    // Handle that case first.
+    if (tagged_union_mem_lookup(tok, init->ty)) {
+      tagged_union_initializer(rest, tok, init);
+      return;
+    }
+
+    Node *expr = assign(rest, tok);
+    add_type(expr);
+    if (expr->ty->kind == TY_TAGGED) {
+      init->expr = expr;
+      return;
+    }
+
+    error_tok(tok, "incompatible type");
   }
 
   if (equal(tok, "{")) {
