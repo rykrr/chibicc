@@ -25,7 +25,7 @@ loop {
 ```
 There was no reason for this other than to get familiar with the compiler.
 
-### Added tagged unions (wip)
+### Added tagged unions
 This modification introduces the 'tagged_union' type and 'match' statement.
 
 ```
