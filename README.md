@@ -47,7 +47,39 @@ match (t) {
 puts("");
 ```
 
-Everything except for the `match Some(x)` are currently implemented.
+The (roughly) equivalent C code is as follows:
+
+```
+enum MaybeInt_Tag { MI_NOTHING, MI_SOME };
+union MaybeInt_Union { int some; };
+
+typedef struct MaybeInt {
+  MaybeInt_Tag tag;
+  MaybeInt_Union data;
+} MaybeInt;
+
+MaybeInt t = { .tag = MI_NOTHING };
+t = (MaybeInt) { .tag = MI_SOME, .data.s = 2 };
+
+switch (t.tag) {
+  case MI_NOTHING: {
+      printf("Nothing!");
+    }
+    break;
+  case MI_SOME: {
+      int x = t.data.s;
+      printf("Some %d", x);
+    }
+    break;
+}
+
+puts("");
+```
+
+### Implementation notes
+- The match statement ensures that all cases are covered or a default case is specified.
+- Match case parameters are pass-by-value
+
 
 ## Description
 (The old master has moved to
