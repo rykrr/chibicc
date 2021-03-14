@@ -1668,6 +1668,14 @@ static Node *match_stmt_cases(Token **rest, Token *tok, Type *ty, Node *cond) {
   Node head = {};
   Node *cur = &head;
 
+  int designator_count = 0;
+  for (Member *mem = ty->members; mem; mem = mem->next)
+    designator_count++;
+
+  bool coverage[designator_count];
+  for (int i = 1; i < designator_count; i++)
+    coverage[i] = false;
+
   bool first = true;
 
   while (!consume_end(&tok, tok)) {
@@ -1702,6 +1710,11 @@ static Node *match_stmt_cases(Token **rest, Token *tok, Type *ty, Node *cond) {
 
     if (!mem)
       error_tok(tok, "identifier does not match any known designator");
+
+    if (coverage[mem->idx])
+      error_tok(tok, "duplicate case");
+
+    coverage[mem->idx] = true;
     tok = tok->next;
 
     Node *data = new_unary(ND_MEMBER, cond, tok);
@@ -1714,9 +1727,16 @@ static Node *match_stmt_cases(Token **rest, Token *tok, Type *ty, Node *cond) {
     current_match->case_next = node;
 
     cur = cur->next = node;
+    *rest = tok; // this is needed for the coverage error message
 
     leave_scope();
   }
+
+  // Coverage check
+  if (!current_match->default_case)
+    for (int i = 1; i < designator_count; i++)
+      if (!coverage[i])
+        error_tok((*rest)->next, "match statement doesn't cover all cases");
 
   block->body = head.next;
   *rest = tok;

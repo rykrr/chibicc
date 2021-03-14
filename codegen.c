@@ -169,7 +169,10 @@ static void gen_addr(Node *node) {
     break;
   case ND_ASSIGN:
   case ND_COND:
-    if (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) {
+    switch (node->ty->kind) {
+    case TY_STRUCT:
+    case TY_TAGGED:
+    case TY_UNION:
       gen_expr(node);
       return;
     }
@@ -187,6 +190,7 @@ static void load(Type *ty) {
   switch (ty->kind) {
   case TY_ARRAY:
   case TY_STRUCT:
+  case TY_TAGGED:
   case TY_UNION:
   case TY_FUNC:
   case TY_VLA:
@@ -232,6 +236,7 @@ static void store(Type *ty) {
   switch (ty->kind) {
   case TY_STRUCT:
   case TY_UNION:
+  case TY_TAGGED:
     for (int i = 0; i < ty->size; i++) {
       println("  mov %d(%%rax), %%r8b", i);
       println("  mov %%r8b, %d(%%rdi)", i);
@@ -417,7 +422,7 @@ static void cast(Type *from, Type *to) {
 // This function returns true if `ty` has only floating-point
 // members in its byte range [lo, hi).
 static bool has_flonum(Type *ty, int lo, int hi, int offset) {
-  if (ty->kind == TY_STRUCT || ty->kind == TY_UNION) {
+  if (ty->kind == TY_STRUCT || ty->kind == TY_UNION || ty->kind == TY_TAGGED) {
     for (Member *mem = ty->members; mem; mem = mem->next)
       if (!has_flonum(mem->ty, lo, hi, offset + mem->offset))
         return false;
@@ -466,6 +471,7 @@ static void push_args2(Node *args, bool first_pass) {
   switch (args->ty->kind) {
   case TY_STRUCT:
   case TY_UNION:
+  case TY_TAGGED:
     push_struct(args->ty);
     break;
   case TY_FLOAT:
@@ -516,6 +522,7 @@ static int push_args(Node *node) {
     switch (ty->kind) {
     case TY_STRUCT:
     case TY_UNION:
+    case TY_TAGGED:
       if (ty->size > 16) {
         arg->pass_by_stack = true;
         stack += align_to(ty->size, 8) / 8;
@@ -897,6 +904,7 @@ static void gen_expr(Node *node) {
       switch (ty->kind) {
       case TY_STRUCT:
       case TY_UNION:
+      case TY_TAGGED:
         if (ty->size > 16)
           continue;
 
@@ -1285,6 +1293,7 @@ static void gen_stmt(Node *node) {
       switch (ty->kind) {
       case TY_STRUCT:
       case TY_UNION:
+      case TY_TAGGED:
         if (ty->size <= 16)
           copy_struct_reg();
         else
@@ -1327,6 +1336,7 @@ static void assign_lvar_offsets(Obj *prog) {
       switch (ty->kind) {
       case TY_STRUCT:
       case TY_UNION:
+      case TY_TAGGED:
         if (ty->size <= 16) {
           bool fp1 = has_flonum(ty, 0, 8, 0);
           bool fp2 = has_flonum(ty, 8, 16, 8);
@@ -1541,6 +1551,7 @@ static void emit_text(Obj *prog) {
       switch (ty->kind) {
       case TY_STRUCT:
       case TY_UNION:
+      case TY_TAGGED:
         assert(ty->size <= 16);
         if (has_flonum(ty, 0, 8, 0))
           store_fp(fp++, var->offset, MIN(8, ty->size));
