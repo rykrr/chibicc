@@ -1249,7 +1249,8 @@ static void tagged_union_mem_initializer(Token **rest, Token *tok, Initializer *
   if (mem)
     error_tok(tok, "missing arguments");
 
-  *rest = tok->next;
+  tok = skip(tok, ")");
+  *rest = tok;
 }
 
 static void tagged_union_initializer(Token **rest, Token *tok, Initializer *init) {
@@ -1275,7 +1276,9 @@ static void tagged_union_initializer(Token **rest, Token *tok, Initializer *init
   // Initialize selected member
   if (equal(tok, "(")) {
     tagged_union_mem_initializer(&tok, tok->next, init->children[mem->idx]);
-    tok = skip(tok, ")");
+  }
+  else if (init->children[mem->idx]->ty->members) {
+    error_tok(tok, "missing arguments");
   }
 
   *rest = tok;
@@ -1613,18 +1616,53 @@ static Node *asm_stmt(Token **rest, Token *tok) {
   return node;
 }
 
-/*
-static void create_match_lvars(Member *mem) {
-  if (mem) {
-    create_match_lvars(mem->next);
-    if (!mem->name)
-      error_tok(mem->name_pos, "parameter name omitted");
-    new_lvar(get_ident(param->name), param);
-  }
-}
-*/
+static Node *match_stmt_case(Token **rest, Token *tok, Type *ty, Node *data) {
 
-static Node *match_stmt_cases(Token **rest, Token *tok, Type *ty) {
+  Node *block = new_node(ND_BLOCK, tok);
+  Node head = {};
+  Node *cur = &head;
+
+  if (equal(tok, "(")) {
+    tok = tok->next;
+
+    for (Member *mem = ty->members; mem; mem = mem->next) {
+      if (tok->kind != TK_IDENT)
+        error_tok(tok, "expected identifier");
+
+      Node *ref = new_unary(ND_MEMBER, data, tok);
+      ref->member = mem;
+
+      Obj *var = new_lvar(get_ident(tok), mem->ty);
+      Node *assn = new_binary(ND_ASSIGN, new_var_node(var, tok),
+                              ref, tok);
+
+      tok = tok->next;
+      cur = cur->next = new_unary(ND_EXPR_STMT, assn, tok);
+
+      if (mem->next)
+        tok = skip(tok, ",");
+    }
+
+    tok = skip(tok, ")");
+  }
+  else if (ty->members) {
+    error_tok(tok, "missing arguments");
+  }
+
+  tok = skip(skip(skip(tok, "="), ">"), "{");
+  cur = cur->next = compound_stmt(&tok, tok);
+
+  // Compound statement with implicit break
+  Node *brk = new_node(ND_GOTO, tok);
+  brk->unique_label = brk_label;
+  cur = cur->next = brk;
+
+  block->body = head.next;
+  *rest = tok;
+  return block;
+}
+
+static Node *match_stmt_cases(Token **rest, Token *tok, Type *ty, Node *cond) {
 
   Node *block = new_node(ND_BLOCK, tok);
   Node head = {};
@@ -1664,21 +1702,14 @@ static Node *match_stmt_cases(Token **rest, Token *tok, Type *ty) {
 
     if (!mem)
       error_tok(tok, "identifier does not match any known designator");
+    tok = tok->next;
 
-    tok = skip(skip(skip(tok->next, "="), ">"), "{");
-
-    // Compound statement with implicit break
-    Node *brk = new_node(ND_GOTO, tok);
-    brk->unique_label = brk_label;
-
-    Node *lhs = new_node(ND_BLOCK, tok);
-    lhs->body = compound_stmt(&tok, tok);
-    lhs->body->next = brk;
-
+    Node *data = new_unary(ND_MEMBER, cond, tok);
+    data->member = mem;
 
     node->label = new_unique_name();
     node->begin = node->end = mem->idx;
-    node->lhs = lhs;
+    node->lhs = match_stmt_case(&tok, tok, mem->ty, data);
     node->case_next = current_match->case_next;
     current_match->case_next = node;
 
@@ -1759,11 +1790,12 @@ static Node *stmt(Token **rest, Token *tok) {
     char *brk = brk_label;
     brk_label = node->brk_label = new_unique_name();
 
+    node->then = match_stmt_cases(rest, tok, ty, cond);
     cond = new_unary(ND_MEMBER, cond, tok);
     cond->member = ty->members;
-
     node->cond = cond;
-    node->then = match_stmt_cases(rest, tok, ty);
+    add_type(cond);
+
     current_match = ma;
     brk_label = brk;
     return node;
@@ -3007,21 +3039,25 @@ static Type *tagged_union_members(Token **rest, Token *tok) {
       tok = skip(tok, ",");
 
     VarAttr attr = {};
-    Type *basety = declspec(&tok, tok, &attr);
+    Type *basety = pointers(&tok, tok, declspec(&tok, tok, &attr));
 
     Member *mem = calloc(1, sizeof(Member));
-    mem->ty = pointers(&tok, tok, basety);
-    mem->name = mem->ty->name;
+    mem->ty = basety;
     mem->idx = idx++;
-    mem->align = attr.align ? attr.align : mem->ty->align;
+    mem->align = attr.align ? attr.align : basety->align;
     mem->offset = bytes;
-    bytes += mem->ty->size;
+    bytes = align_to(bytes, basety->align);
+    bytes += basety->size;
     cur = cur->next = mem;
+
+    if (ty->align < mem->align)
+      ty->align = mem->align;
   }
   ty->members = head.next;
-  ty->size = align_to(ty->size, ty->align);
+  ty->size = align_to(bytes, ty->align);
 
-  *rest = tok->next;
+  tok = skip(tok, ")");
+  *rest = tok;
   return ty;
 }
 
@@ -3089,9 +3125,6 @@ static Type *tagged_union_decl(Token **rest, Token *tok) {
     if (equal(tok, "(")) {
       mem->ty = tagged_union_members(&tok, tok->next);
     }
-    else {
-      mem->ty = ty_void;
-    }
 
     if (ty->align < mem->align)
       ty->align = mem->align;
@@ -3102,7 +3135,7 @@ static Type *tagged_union_decl(Token **rest, Token *tok) {
   }
 
   ty->members = head;
-  ty->size = align_to(size, ty->align);
+  ty->size = align_to(ty->size + size, ty->align);
   *rest = tok;
 
   // If this is a redefinition, overwrite a previous type.
