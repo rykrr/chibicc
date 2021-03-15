@@ -1965,6 +1965,39 @@ static Node *stmt(Token **rest, Token *tok) {
     return node;
   }
 
+  if (equal(tok, "repeat")) {
+    Node *node = new_node(ND_FOR, tok);
+    tok = skip(tok->next, "(");
+
+    enter_scope();
+
+    char *brk = brk_label;
+    char *cont = cont_label;
+    brk_label = node->brk_label = new_unique_name();
+    cont_label = node->cont_label = new_unique_name();
+
+    Obj *counter = new_lvar("", ty_ulong);
+    node->init = new_unary(ND_EXPR_STMT,
+                           lvar_initializer(&tok, tok, counter),
+                           tok);
+
+    node->cond = new_var_node(counter, tok);
+
+    node->inc = new_binary(ND_ASSIGN, new_var_node(counter, tok),
+                           new_add(new_var_node(counter, tok),
+                                   new_num(-1, tok),
+                                   tok),
+                           tok);
+    tok = skip(tok, ")");
+
+    node->then = stmt(rest, tok);
+
+    leave_scope();
+    brk_label = brk;
+    cont_label = cont;
+    return node;
+  }
+
   if (equal(tok, "do")) {
     Node *node = new_node(ND_DO, tok);
 
@@ -3110,7 +3143,7 @@ static Type *tagged_union_decl(Token **rest, Token *tok) {
     tok = tok->next;
   }
   else {
-    error_tok(tok, "tagged_unions cannot be anonymous");
+    // error_tok(tok, "tagged_unions cannot be anonymous");
   }
 
   if (tag && !equal(tok, "{")) {
