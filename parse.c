@@ -1267,7 +1267,7 @@ static void tagged_union_initializer(Token **rest, Token *tok, Initializer *init
   Member *mem = tagged_union_mem_lookup(tok, init->ty);
 
   if (!mem)
-    error_tok(tok, "identifier does not match any known designator");
+    error_tok(tok, "identifier does not atch any known designator");
 
   tok = tok->next;
   init->mem = mem;
@@ -1329,14 +1329,13 @@ static void initializer2(Token **rest, Token *tok, Initializer *init) {
   }
 
   if (init->ty->kind == TY_TAGGED) {
-    // A struct can be initialized with another struct. E.g.
-    // `struct T x = y;` where y is a variable of type `struct T`.
-    // Handle that case first.
     if (tagged_union_mem_lookup(tok, init->ty)) {
       tagged_union_initializer(rest, tok, init);
       return;
     }
 
+    // A tagged_union can be initialized with another struct. E.g.
+    // `tagged_union T x = y;` where y is a variable of type `tagged_union T`.
     Node *expr = assign(rest, tok);
     add_type(expr);
     if (expr->ty->kind == TY_TAGGED) {
@@ -1437,7 +1436,7 @@ static Node *create_lvar_init(Initializer *init, Type *ty, InitDesg *desg, Token
     return create_lvar_init(init->children[mem->idx], mem->ty, &desg2, tok);
   }
 
-  if (ty->kind == TY_TAGGED) {
+  if (ty->kind == TY_TAGGED && !init->expr) {
     Node *node = new_node(ND_NULL_EXPR, tok);
     {
       Member *mem = ty->members;
@@ -1809,12 +1808,10 @@ static Node *stmt(Token **rest, Token *tok) {
     tok = skip(tok->next, "(");
 
     Node *cond = expr(&tok, tok);
-    Node *leaf = cond;
+    add_type(cond);
 
-    while (leaf->kind == ND_DEREF)
-        leaf = leaf->lhs;
+    Type *ty = cond->ty;
 
-    Type *ty = leaf->var->ty;
     if (ty->kind != TY_TAGGED)
       error_tok(tok, "match statement expr must be tagged_union");
 
@@ -3207,13 +3204,15 @@ static Type *tagged_union_decl(Token **rest, Token *tok) {
   ty->size = align_to(ty->size + size, ty->align);
   *rest = tok;
 
-  // If this is a redefinition, overwrite a previous type.
-  // Otherwise, register the struct type.
-  Type *ty2 = hashmap_get2(&scope->tags, tag->loc, tag->len);
-  if (ty2)
-    *ty2 = *ty;
-  else
-      push_tag_scope(tag, ty);
+  if (tag) {
+    // If this is a redefinition, overwrite a previous type.
+    // Otherwise, register the struct type.
+    Type *ty2 = hashmap_get2(&scope->tags, tag->loc, tag->len);
+    if (ty2)
+      *ty2 = *ty;
+    else
+        push_tag_scope(tag, ty);
+  }
 
   return ty;
 }
