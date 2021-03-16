@@ -1780,14 +1780,22 @@ static Node *stmt(Token **rest, Token *tok) {
       return node;
 
     Node *exp = expr(&tok, tok->next);
-    *rest = skip(tok, ";");
 
     add_type(exp);
     Type *ty = current_fn->ty->return_ty;
     if (ty->kind != TY_STRUCT && ty->kind != TY_UNION && ty->kind != TY_TAGGED)
       exp = new_cast(exp, current_fn->ty->return_ty);
-
     node->lhs = exp;
+
+    if (equal(tok, "if")) {
+        Node *ifnode = new_node(ND_IF, tok);
+        tok = skip(tok, "if");
+        ifnode->cond = expr(&tok, tok);
+        ifnode->then = node;
+        node = ifnode;
+    }
+
+    *rest = skip(tok, ";");
     return node;
   }
 
@@ -2168,9 +2176,27 @@ static Node *expr_stmt(Token **rest, Token *tok) {
   return node;
 }
 
+static Node *tagged_union_iskind_stmt(Token **rest, Token *tok, Node *lhs) {
+
+  Node *node = new_unary(ND_MEMBER, lhs, tok);
+  node->member = lhs->ty->members;
+
+  Member *mem = tagged_union_mem_lookup(tok, lhs->ty);
+
+  if (!mem)
+    error_tok(tok, "identifier does not match any known designator");
+
+  *rest = tok->next;
+  return new_binary(ND_EQ, node, new_num(mem->idx, tok->next), tok);
+}
+
 // expr = assign ("," expr)?
 static Node *expr(Token **rest, Token *tok) {
   Node *node = assign(&tok, tok);
+  add_type(node);
+
+  if (node->ty->kind == TY_TAGGED && equal(tok, "is"))
+    node = tagged_union_iskind_stmt(&tok, tok->next, node);
 
   if (equal(tok, ","))
     return new_binary(ND_COMMA, node, expr(rest, tok->next), tok);
