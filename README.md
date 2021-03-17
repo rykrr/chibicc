@@ -4,7 +4,7 @@
 This fork of chibicc (has been|will be) modified to add some experimental
 features, syntax, and semantics. Mainly for fun, partly for class.
 
-### Added 'loop'
+### Added 'loop' and 'repeat' statements
 Added a Rust-like 'loop' keyword and added conditional 'break if' and
 'continue if' statements:
 ```
@@ -26,7 +26,7 @@ loop {
 There was no reason for this other than to get familiar with the compiler.
 
 ### Added tagged unions
-This modification introduces the 'tagged_union' type and 'match' statement.
+This modification introduces the 'tagged_union' type and the 'match' and 'is' statements.
 
 ```
 typedef tagged_union MaybeInt {
@@ -40,11 +40,14 @@ MaybeInt t = Nothing;
 t = (MaybeInt) Some(2);
 
 match (t) {
-    Nothing => { printf("Nothing!"); },
-    Some(x) => { printf("Some %d", x); }
+  Nothing => { printf("Nothing\n"); },
+  Some(x) => { printf("Some %d\n", x); }
 }
 
-puts("");
+if (t is Some)
+  printf("t is Something\n");
+
+return t if t is Nothing;
 ```
 
 The (roughly) equivalent C code is as follows:
@@ -63,18 +66,24 @@ t = (MaybeInt) { .tag = MI_SOME, .data.s = 2 };
 
 switch (t.tag) {
   case MI_NOTHING: {
-      printf("Nothing!");
+      printf("Nothing!\n");
     }
     break;
   case MI_SOME: {
       int x = t.data.s;
-      printf("Some %d", x);
+      printf("Some %d\n", x);
     }
     break;
 }
 
-puts("");
+if (t.tag == MI_SOME)
+  printf("t is Something\n");
+
+if (t.tag == MI_NOTHING)
+  return t;
 ```
+
+
 
 ### Implementation notes
 - The match statement ensures that all cases are covered or a default case is specified.
