@@ -1683,8 +1683,8 @@ static Node *match_stmt_cases(Token **rest, Token *tok, Type *ty, Node *cond) {
   Node head = {};
   Node *cur = &head;
 
-  bool coverage[ty->num_members];
-  for (int i = 1; i < ty->num_members; i++)
+  bool coverage[ty->num_members+1];
+  for (int i = 1; i < ty->num_members + 1; i++)
     coverage[i] = false;
 
   bool first = true;
@@ -1745,7 +1745,7 @@ static Node *match_stmt_cases(Token **rest, Token *tok, Type *ty, Node *cond) {
 
   // Coverage check
   if (!current_match->default_case)
-    for (int i = 1; i < ty->num_members; i++)
+    for (int i = 1; i < ty->num_members + 1; i++)
       if (!coverage[i])
         error_tok((*rest)->next, "match statement doesn't cover all cases");
 
