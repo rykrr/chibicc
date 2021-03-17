@@ -1683,12 +1683,8 @@ static Node *match_stmt_cases(Token **rest, Token *tok, Type *ty, Node *cond) {
   Node head = {};
   Node *cur = &head;
 
-  int designator_count = 0;
-  for (Member *mem = ty->members; mem; mem = mem->next)
-    designator_count++;
-
-  bool coverage[designator_count];
-  for (int i = 1; i < designator_count; i++)
+  bool coverage[ty->num_members];
+  for (int i = 1; i < ty->num_members; i++)
     coverage[i] = false;
 
   bool first = true;
@@ -1749,7 +1745,7 @@ static Node *match_stmt_cases(Token **rest, Token *tok, Type *ty, Node *cond) {
 
   // Coverage check
   if (!current_match->default_case)
-    for (int i = 1; i < designator_count; i++)
+    for (int i = 1; i < ty->num_members; i++)
       if (!coverage[i])
         error_tok((*rest)->next, "match statement doesn't cover all cases");
 
@@ -2939,6 +2935,7 @@ static void struct_members(Token **rest, Token *tok, Type *ty) {
       mem->idx = idx++;
       mem->align = attr.align ? attr.align : mem->ty->align;
       cur = cur->next = mem;
+      ty->num_members++;
       continue;
     }
 
@@ -2960,6 +2957,7 @@ static void struct_members(Token **rest, Token *tok, Type *ty) {
       }
 
       cur = cur->next = mem;
+      ty->num_members++;
     }
   }
 
@@ -3144,6 +3142,7 @@ static Type *tagged_union_members(Token **rest, Token *tok) {
 
     if (ty->align < mem->align)
       ty->align = mem->align;
+    ty->num_members++;
   }
   ty->members = head.next;
   ty->size = align_to(bytes, ty->align);
@@ -3164,9 +3163,6 @@ static Type *tagged_union_decl(Token **rest, Token *tok) {
   if (tok->kind == TK_IDENT) {
     tag = tok;
     tok = tok->next;
-  }
-  else {
-    // error_tok(tok, "tagged_unions cannot be anonymous");
   }
 
   if (tag && !equal(tok, "{")) {
@@ -3214,9 +3210,8 @@ static Type *tagged_union_decl(Token **rest, Token *tok) {
     mem->ty = ty_void;
     tok = tok->next;
 
-    if (equal(tok, "(")) {
+    if (equal(tok, "("))
       mem->ty = tagged_union_members(&tok, tok->next);
-    }
 
     if (ty->align < mem->align)
       ty->align = mem->align;
@@ -3224,6 +3219,7 @@ static Type *tagged_union_decl(Token **rest, Token *tok) {
       size = mem->ty->size;
 
     cur = cur->next = mem;
+    ty->num_members++;
   }
 
   ty->members = head;

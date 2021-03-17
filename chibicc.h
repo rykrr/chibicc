@@ -347,8 +347,9 @@ struct Type {
   Node *vla_len; // # of elements
   Obj *vla_size; // sizeof() value
 
-  // Struct
+  // Struct and Tagged Unions
   Member *members;
+  int num_members;
   bool is_flexible;
   bool is_packed;
 
